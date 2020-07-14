@@ -11,7 +11,8 @@
 //import java.util.Arrays;
 //import java.util.Iterator;
 //
-//public class worldCount {
+public class worldCount {
+
 //    public static void main(String[] args) {
 //        // 编写Spark应用程序
 //        // 本地执行，是可以执行在eclipse中的main方法中，执行的
@@ -122,4 +123,4 @@
 //
 //        sc.close();
 //    }
-//}
+}
