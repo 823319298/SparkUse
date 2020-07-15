@@ -1,4 +1,6 @@
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.*;
@@ -25,19 +27,17 @@ import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import scala.Tuple2;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.net.URL;
 import java.util.*;
 
-public class CountMonitordata {
-    private static transient JavaSparkContext sc;
-    private static transient JavaRDD<Tuple2<ImmutableBytesWritable, Result>> hbaseRDD = null;
-    private static transient DataFrame resultDF;
-    private static transient String date;
-    private static final transient String[] frequencyList = new String[] { "1", "2", "3", "4", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K",
+public abstract class CountMonitordata implements Serializable {
+    private transient JavaSparkContext sc;
+    private transient Configuration inConf;
+    private transient JavaRDD<Tuple2<ImmutableBytesWritable, Result>> hbaseRDD = null;
+    private transient DataFrame resultDF;
+    private transient String date;
+    private final transient String[] frequencyList = new String[] { "1", "2", "3", "4", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K",
             "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f",
             "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x" };
 
@@ -45,14 +45,14 @@ public class CountMonitordata {
      * 初始化Spark执行环境
      * @throws IOException
      */
-    private static void initSparkContext() throws IOException {
+    private void initSparkContext() throws IOException {
         //InputStream in = CountMonitordata.class.getResourceAsStream("/config.properties");
         InputStream in = new FileInputStream(new File("conf"+File.separator+"config.properties"));
         Properties prop = new Properties();
         prop.load(in);
         date = prop.getProperty("date");
 
-    	SparkConf sparkConf = new SparkConf().setAppName("SparkSql countMon").setMaster("local[*]");
+    	SparkConf sparkConf = new SparkConf().setAppName("SparkSql countMon");
 //        SparkConf sparkConf = new SparkConf().setAppName("SparkSql countMon").set("spark.port.maxRetries","100");
         //修改序列化方式
         sparkConf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer");
@@ -60,7 +60,7 @@ public class CountMonitordata {
         //SparkSession替代JavaSparkContext
         sc = new JavaSparkContext(sparkConf);
 
-        Configuration inConf = HBaseConfiguration.create();
+        inConf = HBaseConfiguration.create();
         URL hbaseurl = CountMonitordata.class.getResource("/hbase-site.xml");
         inConf.addResource(hbaseurl);
         //指定输入表名
@@ -95,15 +95,12 @@ public class CountMonitordata {
 //        Filter filter = new RowFilter(CompareFilter.CompareOp.EQUAL,new RegexStringComparator(".{1}"+date));
 //        scan.setFilter(filter);
 
-
-        System.out.println("配置初始化完成");
-
     }
 
     /**
      * 准备数据
      */
-    private static void prepareData() throws IOException {
+    private void prepareData() throws IOException {
         //newAPIHadoopRDD这个RDD用于读取存储在Hadoop中的数据，文件有新 API 输入格式和额外的配置选项，传递到输入格式
         //参数conf会被广播，不可以修改，所以最好一个RDD一个conf
 //        JavaPairRDD<ImmutableBytesWritable, Result> hbaseRDD = sc.newAPIHadoopRDD(inConf,TableInputFormat.class, ImmutableBytesWritable.class, Result.class);
@@ -118,114 +115,74 @@ public class CountMonitordata {
             public Row call(Tuple2<ImmutableBytesWritable, Result> tuple2) {
                 Result result = tuple2._2;
                 String rowkey = Bytes.toString(result.getRow());
+                String family = null;
                 StringBuilder kvalue = new StringBuilder();
                 boolean first = true;
-                for(int i=0;i<24;++i){
-                    for(int j=0;j<60;++j){
-                        if(result.getValue("A".getBytes(), (String.format("%02d", i) + String.format("%02d", j)).getBytes())==null)continue;
-                        if(!first){
-                            kvalue.append(",");
-                        }
-                        first = false;
-                        kvalue.append(String.format("%02d", i)).append(String.format("%02d", j));
-                        kvalue.append("/");
-                        kvalue.append(Bytes.toString(result.getValue("A".getBytes(), (String.format("%02d", i) + String.format("%02d", j)).getBytes())));
+                for (Cell c : result.listCells()) {
+                    if (Bytes.toString(CellUtil.cloneFamily(c)).equals("A")){
+                        family = "A";
+                    }else family = "B";
+                    if(!first){
+                            kvalue.append(',');
                     }
+                    first = false;
+                    kvalue.append(Bytes.toString(CellUtil.cloneQualifier(c)));
+                    kvalue.append('=');
+                    kvalue.append(Bytes.toString(CellUtil.cloneValue(c)));
                 }
-                //creat()方法参数（object... value）
-                return RowFactory.create(rowkey,kvalue.toString(),"A");
-            }
-        });
-        JavaRDD<Row> bdataRDD = hbaseRDD.map(new Function<Tuple2<ImmutableBytesWritable,Result>,Row>() {
-            //序列化表示UID，用于类的版本控制
-            private static final long serialVersionUID = 1L;
-            //重写call（）函数，返回Row类型，这部分需要根据自己需求将result中的数据封装为Object[]
-            @Override
-            public Row call(Tuple2<ImmutableBytesWritable, Result> tuple2) {
-                Result result = tuple2._2;
-                String rowkey = Bytes.toString(result.getRow());
-                StringBuilder kvalue = new StringBuilder();
-                for(int i=0;i<24;++i){
-                    for(int j=0;j<60;++j){
-                        if(result.getValue("B".getBytes(), (String.format("%02d", i) + String.format("%02d", j)).getBytes())==null)continue;
-                        kvalue.append(String.format("%02d", i)).append(String.format("%02d", j));
-                        kvalue.append("/");
-                        kvalue.append(Bytes.toString(result.getValue("B".getBytes(), (String.format("%02d", i) + String.format("%02d", j)).getBytes())));
-                        kvalue.append(",");
-                    }
-                }
-                kvalue.append("a/");
-                kvalue.append(Bytes.toString(result.getValue("B".getBytes(), "a".getBytes())));
-                //creat()方法参数（object... value）
-                return RowFactory.create(rowkey,kvalue.toString(),"B");
+                return RowFactory.create(rowkey,kvalue.toString(),family);
             }
         });
 
         List<StructField> structFields= new ArrayList<>();
-        //List<StructField> bstructFields= new ArrayList<>();
         //创建StructField,基本等同于list内有几个StructField就是几列，需要和上面的Row的Object[]对应
         structFields.add(DataTypes.createStructField("rowkey", DataTypes.StringType, true));
         structFields.add(DataTypes.createStructField("kvalues", DataTypes.StringType, true));
         structFields.add(DataTypes.createStructField("family", DataTypes.StringType, true));
         //构建schema，可以把它理解为架子，结构
         StructType schema = DataTypes.createStructType(structFields);
-        //StructType bschema = DataTypes.createStructType(bstructFields);
 
         SQLContext sqlContext = new SQLContext(sc);
         //生成DataFrame，把书放入架子，把数据放入结构里就变成了dataframe
         DataFrame HBaseDF = sqlContext.createDataFrame(adataRDD, schema);
-        DataFrame bHBaseDF = sqlContext.createDataFrame(bdataRDD, schema);
+//        DataFrame bHBaseDF = sqlContext.createDataFrame(bdataRDD, schema);
         //展示schema2.2.0
         //HBaseDF.printSchema();
 
         DataFrame temp = HBaseDF
                 .withColumn("newkv",functions.explode(functions.split(HBaseDF.col("kvalues"),",")))
                 .drop(HBaseDF.col("kvalues"));
-
         DataFrame temp1 = temp
-                .withColumn("temp",functions.split(temp.col("newkv"),"/"));
+                .withColumn("temp",functions.split(temp.col("newkv"),"="));
 
         resultDF = temp1
                 .select(temp1.col("rowkey"),temp1.col("family"),temp1.col("temp").getItem(0).as("times"),temp1.col("temp").getItem(1).as("values"))
                 .drop(temp1.col("temp"));
 
-        temp = bHBaseDF
-                .withColumn("newkv",functions.explode(functions.split(bHBaseDF.col("kvalues"),",")))
-                .drop(bHBaseDF.col("kvalues"));
-
-        temp1 = temp
-                .withColumn("temp",functions.split(temp.col("newkv"),"/"));
-
-        DataFrame temp2 = temp1
-                .select(temp1.col("rowkey"),temp1.col("family"),temp1.col("temp").getItem(0).as("times"),temp1.col("temp").getItem(1).as("values"))
-                .drop(temp1.col("temp"));
-        resultDF = resultDF.unionAll(temp2);
+        resultDF.show();
         System.out.println("数据准备完成");
     }
 
     /**
      * 写入Hbase，MySQL
      */
-    private static void process(){
-
-        DataFrame newDF = resultDF.groupBy(resultDF.col("rowkey").substr(8,5).as("monitor")).count();
-        newDF.show();
-//        List<Put> puts = new ArrayList<>();
-//        try {
-//            Connection connection = ConnectionFactory.createConnection(inConf);
-//            Table table = connection.getTable(TableName.valueOf("statictis:computeAgg"));
-//            List<Row> results =  newDF.collectAsList();
-//            for(Row result:results){
-//                Put put = new Put(Bytes.toBytes(result.getAs(0).toString()+date));
-//                put.addColumn(Bytes.toBytes("A"),Bytes.toBytes("total"),Bytes.toBytes(result.getAs(1).toString()));
-//                puts.add(put);
-//            }
-//            table.put(puts);
-//            connection.close();
-//            System.out.println("写入Hbase成功！");
-//        } catch (IOException e) {
-//            e.printStackTrace();
-//        }
+    private void process(){
+        List<Put> puts = new ArrayList<>();
+        try {
+            Connection connection = ConnectionFactory.createConnection(inConf);
+            Table table = connection.getTable(TableName.valueOf("statictis:computeAgg"));
+            List<Row> results =  resultDF.groupBy(resultDF.col("rowkey").substr(8,5).as("monitor")).count().collectAsList();
+            for(Row result:results){
+                Put put = new Put(Bytes.toBytes(result.getAs(0).toString()+date));
+                put.addColumn(Bytes.toBytes("A"),Bytes.toBytes("total"),Bytes.toBytes(result.getAs(1).toString()));
+                puts.add(put);
+            }
+            table.put(puts);
+            connection.close();
+            System.out.println("写入Hbase成功！");
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
 
 //        String mysqlUrl = "jdbc:mysql://192.168.****";
 //        String writeTable = "HBase_Spark_teacher";
@@ -235,7 +192,7 @@ public class CountMonitordata {
 //        ResultDF.write().jdbc(mysqlUrl,writeTable,connectionProperties);
     }
 
-    public static void main(String[] args) throws IOException {
+    public void invoke() {
         try {
             initSparkContext();
             prepareData();
